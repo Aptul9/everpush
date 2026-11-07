@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="theme-color" content="#080c10">
+  <meta name="csrf-token" content="{{ csrf_token }}">
+  <title>{% block title %}EverPush{% endblock %}</title>
+  <link rel="icon" href="/static/icon.png" type="image/png">
+  <link rel="stylesheet" href="/static/push.css">
+  {% block scripts %}{% endblock %}
+</head>
+<body>
+  <svg class="symbols" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <symbol id="i-push" viewBox="0 0 24 24"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></symbol>
+    <symbol id="i-clip" viewBox="0 0 24 24"><path d="m21 11-8.5 8.5a5 5 0 0 1-7-7L14 4a3.5 3.5 0 0 1 5 5l-8.5 8.5a2 2 0 0 1-3-3L15 7"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v13m-5-5 5 5 5-5M4 16v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4"/></symbol>
+    <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Zm0 0v6h6M8 13h8M8 17h5"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7"/></symbol>
+    <symbol id="i-lock" viewBox="0 0 24 24"><rect x="4" y="10" width="16" height="11" rx="3"/><path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v3"/></symbol>
+    <symbol id="i-sync" viewBox="0 0 24 24"><path d="M21 12a9 9 0 0 1-15.5 6.2M3 12A9 9 0 0 1 18.5 5.8M18 2v4h-4M6 22v-4h4"/></symbol>
+    <symbol id="i-logout" viewBox="0 0 24 24"><path d="M9 4H4v16h5M10 12h11m-4-4 4 4-4 4"/></symbol>
+  </svg>
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="EverPush">
+      <img src="/static/logo-icon.png" alt="" width="34" height="34">
+      <span><b>EVERPUSH</b><small>EVERBRIGHT</small></span>
+    </a>
+    {% if request.user.is_authenticated %}<div class="capacity-top" role="status" aria-live="polite"><span class="status-dot" data-live-dot></span><span data-count>Sincronizzazione…</span></div>{% endif %}
+    <div class="top-actions">
+      <a class="quiet-link services-link" href="https://servizi.everbright.it" target="_blank" rel="noopener noreferrer">Servizi</a>
+      {% if request.user.is_authenticated %}
+      <form action="/logout/" method="post">{% csrf_token %}<button class="icon-button" title="Esci" aria-label="Esci"><svg><use href="#i-logout"/></svg></button></form>
+      <span class="avatar" title="{{ request.user.email }}" aria-label="Account {{ request.user.email }}">A</span>
+      {% else %}<span class="private-label"><svg><use href="#i-lock"/></svg> Spazio personale</span>{% endif %}
+    </div>
+  </header>
+  {% block content %}{% endblock %}
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+</body>
+</html>

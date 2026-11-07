@@ -1,0 +1,65 @@
+name: everpush
+
+services:
+  app:
+    image: everpush:${RELEASE:-local}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?DJANGO_SECRET_KEY required}
+      PUSH_ALLOWED_HOSTS: push.everbright.it,localhost
+      PUSH_DATA_DIR: /data
+    volumes:
+      - ${PUSH_DATA_DIR:-/opt/everpush/data}:/data
+    read_only: true
+    tmpfs:
+      - /tmp:size=67108864,mode=1777
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+    mem_limit: 512m
+    pids_limit: 100
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "2"
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen(urllib.request.Request('http://localhost:8000/healthz/', headers={'X-Forwarded-Proto':'https'}), timeout=5)"]
+      interval: 15s
+      timeout: 6s
+      retries: 4
+      start_period: 15s
+  web:
+    image: everpush-web:${RELEASE:-local}
+    build:
+      context: .
+      dockerfile: Dockerfile.caddy
+    environment:
+      DOMAIN: push.everbright.it
+    ports:
+      - 127.0.0.1:4448:8443
+    volumes:
+      - certificates:/data
+      - caddy_config:/config
+    depends_on:
+      app:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /tmp:size=33554432,mode=1777
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+    mem_limit: 256m
+    pids_limit: 100
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "2"
+
+volumes:
+  certificates:
+  caddy_config:

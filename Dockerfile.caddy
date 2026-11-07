@@ -1,0 +1,5 @@
+FROM caddy:2.11.4-alpine
+RUN setcap -r /usr/bin/caddy && chown -R 10001:10001 /data /config
+COPY Caddyfile /etc/caddy/Caddyfile
+COPY static /srv/static
+USER 10001:10001

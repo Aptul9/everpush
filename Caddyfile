@@ -1,0 +1,36 @@
+{
+	http_port 8080
+	https_port 8443
+	servers {
+		protocols h1 h2
+	}
+}
+
+{$DOMAIN:push.everbright.it} {
+	tls {
+		issuer acme {
+			disable_http_challenge
+		}
+	}
+	header {
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy same-origin
+		X-Robots-Tag "noindex, nofollow, noarchive"
+		-Server
+	}
+	# 10 MiB file plus multipart overhead; the application enforces the exact limit.
+	request_body {
+		max_size 11MB
+	}
+	handle_path /static/* {
+		header Cache-Control "no-cache"
+		root * /srv/static
+		file_server
+	}
+	handle {
+		reverse_proxy app:8000 {
+			header_up X-Real-IP {remote_host}
+		}
+	}
+}

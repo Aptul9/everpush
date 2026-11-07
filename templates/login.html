@@ -1,0 +1,26 @@
+{% extends 'base.html' %}
+{% block title %}Accedi · EverPush{% endblock %}
+{% block content %}
+<main class="entry-layout">
+  <section class="entry-intro">
+    <div class="eyebrow">DA UN COMPUTER ALL'ALTRO</div>
+    <h1>Scrivi qui,<br>ritrovalo <em>là.</em></h1>
+    <p>Testi e file piccoli, pronti da copiare<br>su qualsiasi dispositivo.</p>
+    <div class="intro-features"><span><svg><use href="#i-sync"/></svg>Sincronizzato in tempo reale</span><span><svg><use href="#i-clip"/></svg>File fino a 10 MB</span></div>
+    <div class="orb" aria-hidden="true"><svg><use href="#i-push"/></svg></div>
+  </section>
+  <section class="entry-card" aria-labelledby="login-title">
+    <div class="small-icon"><svg><use href="#i-push"/></svg></div>
+    <h2 id="login-title">Accedi a EverPush</h2>
+    <p class="muted">I tuoi appunti condivisi tra dispositivi.</p>
+    <form method="post" class="login-form">
+      {% csrf_token %}
+      <label>Email<input name="email" type="email" autocomplete="username" required maxlength="254" placeholder="La tua email" data-testid="login-email"></label>
+      <label>Password<input name="password" type="password" autocomplete="current-password" required maxlength="256" placeholder="La tua password" data-testid="login-password"></label>
+      {% if error %}<p class="form-error" role="alert">{{ error }}</p>{% endif %}
+      <button class="primary full" type="submit" data-testid="login-submit">Accedi <span aria-hidden="true">↗</span></button>
+    </form>
+  </section>
+</main>
+<footer class="entry-footer">Everbright IT Services <span>Da un dispositivo all'altro.</span></footer>
+{% endblock %}
