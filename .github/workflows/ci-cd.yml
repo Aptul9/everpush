@@ -1,0 +1,118 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Tests and containers
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PUSH_DATA_DIR: /tmp/push-ci-data
+      PUSH_ALLOWED_HOSTS: localhost,testserver
+      PUSH_INSECURE_LOCAL: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Isolated test credentials
+        run: |
+          python - <<'PY'
+          import os, secrets
+          with open(os.environ['GITHUB_ENV'], 'a') as output:
+              for name in ('DJANGO_SECRET_KEY', 'TEST_OWNER_PASSWORD'):
+                  value = secrets.token_urlsafe(48)
+                  print('::add-mask::' + value)
+                  output.write(name + '=' + value + '\n')
+          PY
+      - name: Django tests
+        run: |
+          mkdir -p "$PUSH_DATA_DIR"
+          python manage.py makemigrations --check --dry-run
+          python manage.py test push --verbosity 1
+          PUSH_INSECURE_LOCAL=0 python manage.py check --deploy --fail-level WARNING
+          python -m unittest discover -s ci -p 'test_*.py'
+          node --check static/push.js
+      - name: Build and validate production containers
+        run: |
+          docker build -t everpush:ci .
+          docker build -f Dockerfile.caddy -t everpush-web:ci .
+          docker run --rm -e DOMAIN=push.example.com everpush-web:ci caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+          docker compose config --quiet
+          # A sparse tmpfs fixture advertises enough capacity for the real 20 GB reserve.
+          volume="push-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          docker volume create --driver local --opt type=tmpfs --opt device=tmpfs --opt o=size=24g,uid=10001,gid=10001,mode=0700 "$volume"
+          cleanup() {
+            if test -n "${container:-}"; then docker rm -f "$container" >/dev/null; fi
+            docker volume rm "$volume" >/dev/null
+          }
+          trap cleanup EXIT
+          options=(--cap-drop ALL --security-opt no-new-privileges:true --read-only --tmpfs /tmp:size=67108864 -e DJANGO_SECRET_KEY -e PUSH_INSECURE_LOCAL=1 -e PUSH_ALLOWED_HOSTS=localhost -v "$volume:/data")
+          # Keep tmpfs mounted across one-off migration and bootstrap containers.
+          container=$(docker run -d "${options[@]}" -p 127.0.0.1:8791:8000 everpush:ci)
+          docker run --rm "${options[@]}" everpush:ci python manage.py migrate --noinput
+          docker run --rm "${options[@]}" everpush:ci python manage.py check
+          printf '%s\n' "$TEST_OWNER_PASSWORD" | docker run --rm -i "${options[@]}" everpush:ci python manage.py bootstrap_owner
+          docker run --rm "${options[@]}" everpush:ci python manage.py cleanup
+          printf '%s\n' "$TEST_OWNER_PASSWORD" | python ci/smoke.py --url http://localhost:8791
+          logs=$(docker logs "$container" 2>&1)
+          if grep -E '\[ERROR\]|Traceback' <<< "$logs"; then
+            echo 'Production container emitted runtime errors' >&2
+            exit 1
+          fi
+          bash -n ci/deploy.sh ci/rollback.sh
+
+  deploy:
+    name: Deploy
+    needs: check
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: production
+      url: https://push.everbright.it
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    env:
+      TARGET: ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: SSH configuration
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+      - name: Prepare release and runtime inputs
+        env:
+          DJANGO_SECRET_KEY: ${{ secrets.DJANGO_SECRET_KEY }}
+          OWNER_PASSWORD: ${{ secrets.OWNER_PASSWORD }}
+        run: |
+          test -n "$DJANGO_SECRET_KEY" && test -n "$OWNER_PASSWORD"
+          umask 077
+          git archive --format=tar.gz HEAD > release.tar.gz
+          printf 'DJANGO_SECRET_KEY=%s\n' "$DJANGO_SECRET_KEY" > environment.new
+          printf '%s\n' "$OWNER_PASSWORD" > owner-password.new
+          ssh "$TARGET" 'install -d -m 700 /opt/everpush'
+          scp release.tar.gz environment.new owner-password.new "$TARGET:/opt/everpush/"
+      - name: Deploy from versioned script
+        run: ssh "$TARGET" "set -e; tar xzf /opt/everpush/release.tar.gz -C /opt/everpush ci/deploy.sh; bash /opt/everpush/ci/deploy.sh '$GITHUB_SHA'"
+      - name: Public application checks
+        run: |
+          curl --fail --silent --show-error https://push.everbright.it/healthz/ | grep -q '"status": "ok"'
+          curl --fail --silent --show-error https://push.everbright.it/login/ | grep -q 'Accedi a EverPush'
+          test "$(curl -s -o /dev/null -w '%{http_code}' https://push.everbright.it/api/items/)" = 401

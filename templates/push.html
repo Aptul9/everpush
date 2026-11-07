@@ -1,0 +1,27 @@
+{% extends 'base.html' %}
+{% block title %}EverPush{% endblock %}
+{% block scripts %}<script src="/static/push.js" defer></script>{% endblock %}
+{% block content %}
+<main class="push-panel" data-max-items="{{ max_items }}" data-max-file="{{ max_file_bytes }}" data-max-text="{{ max_text_chars }}">
+  <div class="page-heading"><div><h1>Il tuo <em>Push</em></h1><p>Scrivi o incolla qui, riprendi da un altro computer. Restano gli ultimi {{ max_items }} elementi.</p></div></div>
+  <form id="composer" class="composer" data-testid="composer">
+    <label class="visually-hidden" for="composer-text">Testo da inviare</label>
+    <textarea id="composer-text" data-testid="composer-text" rows="3" maxlength="{{ max_text_chars }}" placeholder="Scrivi o incolla un testo, un'immagine o un file…"></textarea>
+    <div class="composer-actions">
+      <button type="button" class="secondary compact" data-attach data-testid="attach"><svg><use href="#i-clip"/></svg>Allega file</button>
+      <span class="composer-hint">Max 10 MB per file · Invio con Ctrl+Invio</span>
+      <button type="submit" class="primary compact" data-testid="send"><svg><use href="#i-push"/></svg>Invia</button>
+    </div>
+    <input id="file-input" data-testid="file-input" type="file" multiple class="visually-hidden" aria-label="Scegli file da inviare">
+    <div class="drop-overlay" aria-hidden="true"><svg><use href="#i-clip"/></svg>Rilascia per inviare</div>
+  </form>
+  <section id="upload-progress" class="upload-progress" aria-live="polite" hidden>
+    <div><strong id="upload-name">Invio</strong><span id="upload-percent">0%</span></div>
+    <progress id="upload-bar" max="100" value="0" aria-label="Avanzamento invio"></progress>
+  </section>
+  <ol id="items" class="items" data-testid="items" aria-label="Elementi inviati"></ol>
+  <div id="empty-state" class="empty-state" hidden><div class="empty-icon"><svg><use href="#i-push"/></svg></div><h3>Ancora niente qui.</h3><p>Scrivi un testo o trascina un file: comparirà su tutti i tuoi dispositivi.</p></div>
+  <footer class="panel-footer"><span>EVER<b>PUSH</b></span><span>Aggiornato in tempo reale</span></footer>
+</main>
+<dialog id="drive-dialog"><form method="dialog"><div class="small-icon"><svg><use href="#i-file"/></svg></div><h2>File oltre 10 MB</h2><p id="drive-name"></p><p class="muted">EverPush accetta file fino a 10 MB. Per quelli più grandi usa EverDrive.</p><div class="dialog-actions"><button value="cancel" class="secondary">Chiudi</button><a class="primary" href="{{ drive_url }}" target="_blank" rel="noopener noreferrer" data-testid="open-drive">Apri EverDrive</a></div></form></dialog>
+{% endblock %}
