@@ -1,8 +1,14 @@
 # EverPush
 
-Personal clipboard between devices at `https://push.everbright.it`. One owner account, `aptul4ever@gmail.com`. No registration, invitations or account-management interface.
+Personal clipboard between devices at `https://push.everbright.it`. Login through EverID; every user with access sees and manages the same shared data.
 
 Text and files sent from one browser appear in every other open session within about two seconds. Each page polls `/api/items/?after=<last id>` every 2 seconds while visible and every 15 seconds while hidden; the response carries all current ids, so deletions propagate as well.
+
+## Login
+
+EverID (Authentik at `id.everbright.it`) is the primary login: OIDC authorization code with PKCE, client `everpush`, callback `/oidc/callback`, scopes `openid email profile`. Access requires group `app-push` in the `groups` claim; other EverID users get HTTP 403 and no session. Users are matched by email (case-insensitive) or created on first login without a usable password. Logout ends the local session and redirects to the EverID end-session endpoint with `id_token_hint`.
+
+Password login for the seeded owner is a fallback behind `LEGACY_LOGIN` (repository variable, default `1`). With `LEGACY_LOGIN=0` password posts return HTTP 403 and existing password sessions stop being valid. Startup refuses `LEGACY_LOGIN=0` without EverID client credentials.
 
 ## Limits
 
@@ -17,7 +23,7 @@ Images (PNG, JPEG, GIF, WebP) are previewed and can be copied to the clipboard a
 
 `.github/workflows/ci-cd.yml` tests Python behavior, routing transformations and production containers. Pull requests run checks. Main deploys through SSH using `ci/deploy.sh`: release directory, SQLite migration, owner creation when absent, orphan file cleanup, sslh route `push.everbright.it` to `127.0.0.1:4448`, Compose start and public checks.
 
-Required repository secrets: `DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_SSH_KEY`, `DEPLOY_KNOWN_HOSTS`, `DJANGO_SECRET_KEY`, `OWNER_PASSWORD`. Existing owner password is never reset by deployment. Runtime files live outside release directories in `/opt/everpush/data`.
+Required repository secrets: `DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_SSH_KEY`, `DEPLOY_KNOWN_HOSTS`, `DJANGO_SECRET_KEY`, `OWNER_PASSWORD`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`; variables `OIDC_ISSUER`, optional `LEGACY_LOGIN`. Deploy stops when the EverID client is missing. EverID settings are rewritten to `oidc.env` on every deploy. Existing owner password is never reset by deployment. Runtime files live outside release directories in `/opt/everpush/data`.
 
 ## Rollback
 
