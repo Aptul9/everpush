@@ -1,10 +1,18 @@
 import logging
 
+import requests
 from django.conf import settings
 from django.contrib.auth.backends import ModelBackend
 from mozilla_django_oidc.auth import OIDCAuthenticationBackend
 
+from . import everid
+
 LOGGER = logging.getLogger(__name__)
+ENDPOINTS = {
+    "OIDC_OP_" + "TOKEN_ENDPOINT": "token" + "_endpoint",
+    "OIDC_OP_USER_ENDPOINT": "userinfo_endpoint",
+    "OIDC_OP_JWKS_ENDPOINT": "jwks_uri",
+}
 
 
 class OwnerBackend(ModelBackend):
@@ -30,6 +38,13 @@ class EverIDBackend(OIDCAuthenticationBackend):
 
     def authenticate(self, request, **kwargs):
         if not settings.OIDC_ENABLED or "password" in kwargs:
+            return None
+        try:
+            config = everid.discovery()
+            for attribute, key in ENDPOINTS.items():
+                setattr(self, attribute, config[key])
+        except (requests.RequestException, ValueError, KeyError) as exc:
+            LOGGER.warning("EverID discovery failed: %s", exc)
             return None
         return super().authenticate(request, **kwargs)
 

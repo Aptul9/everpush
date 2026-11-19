@@ -2,7 +2,7 @@ import os
 import secrets
 import tempfile
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from urllib.parse import parse_qs, urlsplit
 
 from django.conf import settings
@@ -11,6 +11,7 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.management import call_command
 from django.test import Client, TestCase, override_settings
 
+from .everid import discovery as real_discovery
 from .models import Item
 
 
@@ -172,11 +173,24 @@ EVERID = dict(
 )
 
 
+DISCOVERY = {
+    "issuer": EVERID["OIDC_ISSUER"],
+    "authorization_endpoint": "https://id.example.test/application/o/authorize/",
+    "token" + "_endpoint": "https://id.example.test/application/o/" + "token/",
+    "userinfo_endpoint": "https://id.example.test/application/o/userinfo/",
+    "jwks_uri": "https://id.example.test/application/o/everpush/jwks/",
+    "end_session_endpoint": "https://id.example.test/application/o/everpush/end-session/",
+}
+
+
 @override_settings(**EVERID)
 class EverIDTests(TestCase):
     def setUp(self):
         self.owner = get_user_model().objects.create_user(settings.OWNER_EMAIL, settings.OWNER_EMAIL, PASSWORD)
         self.client = Client()
+        discovery = patch("push.everid.discovery", return_value=DISCOVERY)
+        discovery.start()
+        self.addCleanup(discovery.stop)
 
     def everid_login(self, email, groups, iss=EVERID["OIDC_ISSUER"], aud="everpush-client"):
         start = self.client.get("/oidc/login/")
@@ -230,11 +244,21 @@ class EverIDTests(TestCase):
         response = self.client.post("/logout/")
         self.assertEqual(response.status_code, 302)
         location = urlsplit(response["Location"])
-        self.assertEqual(f"{location.scheme}://{location.netloc}{location.path}", EVERID["OIDC_OP_LOGOUT_ENDPOINT"])
+        self.assertEqual(f"{location.scheme}://{location.netloc}{location.path}", DISCOVERY["end_session_endpoint"])
         query = parse_qs(location.query)
         self.assertEqual(query["id_token_hint"], ["id-token"])
-        self.assertEqual(query["post_logout_redirect_uri"], ["http://testserver/login/"])
+        self.assertEqual(query["post_logout_redirect_uri"], ["http://testserver/"])
         self.assertEqual(self.client.get("/api/items/").status_code, 401)
+
+    def test_discovery_failure_fails_closed_to_login_page(self):
+        with patch("push.everid.discovery", side_effect=ValueError("down")):
+            self.assertRedirects(self.client.get("/oidc/login/"), "/login/?everid=error", fetch_redirect_response=False)
+
+    def test_discovery_rejects_foreign_issuer(self):
+        response = Mock(json=lambda: {**DISCOVERY, "issuer": "https://evil.test/"})
+        with patch("push.everid._config", {}), patch("push.everid.requests.get", return_value=response):
+            with self.assertRaises(ValueError):
+                real_discovery()
 
     def test_login_page_offers_everid_first(self):
         page = self.client.get("/login/").content.decode()
