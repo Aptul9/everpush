@@ -1,4 +1,7 @@
+import logging
 from functools import wraps
+
+import requests
 
 from django.conf import settings
 from django.contrib.auth import authenticate, login, logout
@@ -7,10 +10,14 @@ from django.db import connection
 from django.http import FileResponse, Http404, HttpResponse, JsonResponse
 from django.shortcuts import redirect, render
 from django.views.decorators.csrf import ensure_csrf_cookie
+from django.utils.http import urlencode
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
+from mozilla_django_oidc.views import OIDCAuthenticationCallbackView, OIDCAuthenticationRequestView
 
 from .models import Item
-from . import service
+from . import everid, service
+
+LOGGER = logging.getLogger(__name__)
 
 
 def api(view):
@@ -40,6 +47,12 @@ def home(request):
     })
 
 
+def login_page(request, error=None, status=200):
+    return render(request, "login.html", {
+        "error": error, "everid": settings.OIDC_ENABLED, "legacy_login": settings.LEGACY_LOGIN,
+    }, status=status)
+
+
 @ensure_csrf_cookie
 def login_view(request):
     if request.user.is_authenticated:
@@ -47,6 +60,8 @@ def login_view(request):
     error = None
     status = 200
     if request.method == "POST":
+        if not settings.LEGACY_LOGIN:
+            return login_page(request, "Accesso con password disattivato. Usa EverID.", 403)
         try:
             service.rate_limit(request, "login", 10, 15 * 60)
             user = authenticate(request, username=request.POST.get("email", ""), password=request.POST.get("password", ""))
@@ -59,12 +74,59 @@ def login_view(request):
             error, status = exc.message, exc.status
     elif request.method != "GET":
         return HttpResponse(status=405)
-    return render(request, "login.html", {"error": error}, status=status)
+    elif request.GET.get("everid") == "error":
+        error = "Accesso con EverID non riuscito. Riprova."
+    return login_page(request, error, status)
+
+
+class EverIDCallbackView(OIDCAuthenticationCallbackView):
+    def get(self, request):
+        if not settings.OIDC_ENABLED:
+            raise Http404
+        return super().get(request)
+
+    def login_failure(self):
+        if getattr(self.request, "everid_denied", False):
+            return login_page(self.request, "Il tuo account EverID non ha accesso a EverPush.", 403)
+        return redirect("/login/?everid=error")
+
+
+@require_GET
+def everid_login(request):
+    if not settings.OIDC_ENABLED:
+        raise Http404
+    if request.user.is_authenticated:
+        return redirect("home")
+    return EverIDRequestView.as_view()(request)
+
+
+class EverIDRequestView(OIDCAuthenticationRequestView):
+    def get(self, request):
+        try:
+            self.OIDC_OP_AUTH_ENDPOINT = everid.discovery()["authorization_endpoint"]
+        except (requests.RequestException, ValueError, KeyError) as exc:
+            LOGGER.warning("EverID discovery failed: %s", exc)
+            return redirect("/login/?everid=error")
+        return super().get(request)
+
+
+def end_session_endpoint():
+    try:
+        return everid.discovery()["end_session_endpoint"]
+    except (requests.RequestException, ValueError, KeyError):
+        return settings.OIDC_OP_LOGOUT_ENDPOINT
 
 
 @require_POST
 def logout_view(request):
+    id_token = request.session.get("oidc_id_token")
     logout(request)
+    if settings.OIDC_ENABLED and id_token:
+        query = urlencode({
+            "id_token_hint": id_token,
+            "post_logout_redirect_uri": request.build_absolute_uri("/"),
+        })
+        return redirect(f"{end_session_endpoint()}?{query}")
     return redirect("login")
 
 

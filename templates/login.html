@@ -13,13 +13,19 @@
     <div class="small-icon"><svg><use href="#i-push"/></svg></div>
     <h2 id="login-title">Accedi a EverPush</h2>
     <p class="muted">I tuoi appunti condivisi tra dispositivi.</p>
+    {% if everid %}
+    <a class="primary full" href="/oidc/login/" data-testid="everid-login">Accedi con EverID <span aria-hidden="true">↗</span></a>
+    {% endif %}
+    {% if error %}<p class="form-error" role="alert">{{ error }}</p>{% endif %}
+    {% if legacy_login %}
+    {% if everid %}<div class="separator"><span>Oppure con email e password</span></div>{% endif %}
     <form method="post" class="login-form">
       {% csrf_token %}
       <label>Email<input name="email" type="email" autocomplete="username" required maxlength="254" placeholder="La tua email" data-testid="login-email"></label>
       <label>Password<input name="password" type="password" autocomplete="current-password" required maxlength="256" placeholder="La tua password" data-testid="login-password"></label>
-      {% if error %}<p class="form-error" role="alert">{{ error }}</p>{% endif %}
-      <button class="primary full" type="submit" data-testid="login-submit">Accedi <span aria-hidden="true">↗</span></button>
+      <button class="{% if everid %}secondary{% else %}primary{% endif %} full" type="submit" data-testid="login-submit">Accedi <span aria-hidden="true">↗</span></button>
     </form>
+    {% endif %}
   </section>
 </main>
 <footer class="entry-footer">Everbright IT Services <span>Da un dispositivo all'altro.</span></footer>

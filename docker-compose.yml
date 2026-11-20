@@ -10,6 +10,10 @@ services:
       DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?DJANGO_SECRET_KEY required}
       PUSH_ALLOWED_HOSTS: push.everbright.it,localhost
       PUSH_DATA_DIR: /data
+      OIDC_ISSUER: ${OIDC_ISSUER:-https://id.everbright.it/application/o/everpush/}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
+      LEGACY_LOGIN: ${LEGACY_LOGIN:-1}
     volumes:
       - ${PUSH_DATA_DIR:-/opt/everpush/data}:/data
     read_only: true

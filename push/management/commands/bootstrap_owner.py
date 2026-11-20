@@ -7,13 +7,11 @@ from django.db import transaction
 
 
 class Command(BaseCommand):
-    help = "Create the single owner account once, reading its initial password from stdin."
+    help = "Create the owner account once, reading its initial password from stdin."
 
     def handle(self, *args, **options):
         settings.FILE_DIR.mkdir(parents=True, exist_ok=True)
         User = get_user_model()
-        if User.objects.exclude(username=settings.OWNER_EMAIL).exists():
-            raise CommandError("Unexpected accounts exist; no account was changed")
         with transaction.atomic():
             if User.objects.filter(username=settings.OWNER_EMAIL).exists():
                 self.stdout.write("Owner already exists; password unchanged")
@@ -23,4 +21,4 @@ class Command(BaseCommand):
                 raise CommandError("Initial owner password must be supplied on stdin")
             validate_password(password)
             User.objects.create_user(username=settings.OWNER_EMAIL, email=settings.OWNER_EMAIL, password=password)
-        self.stdout.write("Owner created; public account creation disabled")
+        self.stdout.write("Owner created")

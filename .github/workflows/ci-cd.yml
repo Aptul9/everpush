@@ -101,14 +101,24 @@ jobs:
         env:
           DJANGO_SECRET_KEY: ${{ secrets.DJANGO_SECRET_KEY }}
           OWNER_PASSWORD: ${{ secrets.OWNER_PASSWORD }}
+          OIDC_CLIENT_ID: ${{ secrets.OIDC_CLIENT_ID }}
+          OIDC_CLIENT_SECRET: ${{ secrets.OIDC_CLIENT_SECRET }}
+          OIDC_ISSUER: ${{ vars.OIDC_ISSUER }}
+          LEGACY_LOGIN: ${{ vars.LEGACY_LOGIN || '1' }}
         run: |
           test -n "$DJANGO_SECRET_KEY" && test -n "$OWNER_PASSWORD"
+          # EverID is mandatory from this release on; a missing client must stop the deploy.
+          [[ "$OIDC_CLIENT_ID" =~ ^[A-Za-z0-9._~-]+$ && "$OIDC_CLIENT_SECRET" =~ ^[A-Za-z0-9._~-]+$ ]]
+          [[ "$OIDC_ISSUER" =~ ^https://[a-z0-9.-]+/application/o/[a-z0-9-]+/$ ]]
+          [[ "$LEGACY_LOGIN" =~ ^[01]$ ]]
           umask 077
           git archive --format=tar.gz HEAD > release.tar.gz
           printf 'DJANGO_SECRET_KEY=%s\n' "$DJANGO_SECRET_KEY" > environment.new
+          printf 'OIDC_ISSUER=%s\nOIDC_CLIENT_ID=%s\nOIDC_CLIENT_SECRET=%s\nLEGACY_LOGIN=%s\n' \
+            "$OIDC_ISSUER" "$OIDC_CLIENT_ID" "$OIDC_CLIENT_SECRET" "$LEGACY_LOGIN" > oidc.env.new
           printf '%s\n' "$OWNER_PASSWORD" > owner-password.new
           ssh "$TARGET" 'install -d -m 700 /opt/everpush'
-          scp release.tar.gz environment.new owner-password.new "$TARGET:/opt/everpush/"
+          scp release.tar.gz environment.new oidc.env.new owner-password.new "$TARGET:/opt/everpush/"
       - name: Deploy from versioned script
         run: ssh "$TARGET" "set -e; tar xzf /opt/everpush/release.tar.gz -C /opt/everpush ci/deploy.sh; bash /opt/everpush/ci/deploy.sh '$GITHUB_SHA'"
       - name: Public application checks
@@ -116,3 +126,8 @@ jobs:
           curl --fail --silent --show-error https://push.everbright.it/healthz/ | grep -q '"status": "ok"'
           curl --fail --silent --show-error https://push.everbright.it/login/ | grep -q 'Accedi a EverPush'
           test "$(curl -s -o /dev/null -w '%{http_code}' https://push.everbright.it/api/items/)" = 401
+          curl --fail --silent --show-error https://push.everbright.it/login/ | grep -q 'data-testid="everid-login"'
+          origin=$(cut -d/ -f1-3 <<< "${{ vars.OIDC_ISSUER }}")
+          location=$(curl --silent --show-error -o /dev/null -w '%{http_code} %{redirect_url}' https://push.everbright.it/oidc/login/)
+          echo "EverID start: ${location%%\?*}"
+          [[ "$location" == "302 $origin/application/o/authorize/?"* ]]

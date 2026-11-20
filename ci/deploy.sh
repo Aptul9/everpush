@@ -22,9 +22,13 @@ if test -e .env && ! cmp -s .env environment.new; then
 fi
 if ! test -e .env; then mv environment.new .env; else rm environment.new; fi
 chmod 600 .env
+# EverID client settings and the password-login flag follow the repository on every deploy.
+test -s oidc.env.new
+mv oidc.env.new oidc.env
+chmod 600 oidc.env
 export RELEASE
 
-compose() { docker compose --project-directory "$NEXT" --env-file "$BASE/.env" "$@"; }
+compose() { docker compose --project-directory "$NEXT" --env-file "$BASE/.env" --env-file "$BASE/oidc.env" "$@"; }
 compose config --quiet
 compose build --pull
 if test -L app; then

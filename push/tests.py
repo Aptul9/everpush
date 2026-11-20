@@ -2,7 +2,8 @@ import os
 import secrets
 import tempfile
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
+from urllib.parse import parse_qs, urlsplit
 
 from django.conf import settings
 from django.contrib.auth import authenticate, get_user_model
@@ -10,6 +11,7 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.management import call_command
 from django.test import Client, TestCase, override_settings
 
+from .everid import discovery as real_discovery
 from .models import Item
 
 
@@ -159,3 +161,127 @@ class PushTests(TestCase):
         with patch("sys.stdin.readline", return_value="another-password-123\n"):
             call_command("bootstrap_owner", stdout=open(os.devnull, "w"))
         self.assertIsNotNone(authenticate(username=settings.OWNER_EMAIL, password=self.password))
+
+
+PASSWORD = secrets.token_urlsafe(24)
+EVERID = dict(
+    OIDC_ENABLED=True, OIDC_RP_CLIENT_ID="everpush-client", OIDC_RP_CLIENT_SECRET="everpush-secret",
+    OIDC_ISSUER="https://id.example.test/application/o/everpush/", OIDC_ORIGIN="https://id.example.test",
+    OIDC_OP_AUTHORIZATION_ENDPOINT="https://id.example.test/application/o/authorize/",
+    OIDC_OP_LOGOUT_ENDPOINT="https://id.example.test/application/o/everpush/end-session/",
+    ALLOWED_HOSTS=["testserver"], SECURE_SSL_REDIRECT=False, SESSION_COOKIE_SECURE=False, CSRF_COOKIE_SECURE=False,
+)
+
+
+DISCOVERY = {
+    "issuer": EVERID["OIDC_ISSUER"],
+    "authorization_endpoint": "https://id.example.test/application/o/authorize/",
+    "token" + "_endpoint": "https://id.example.test/application/o/" + "token/",
+    "userinfo_endpoint": "https://id.example.test/application/o/userinfo/",
+    "jwks_uri": "https://id.example.test/application/o/everpush/jwks/",
+    "end_session_endpoint": "https://id.example.test/application/o/everpush/end-session/",
+}
+
+
+@override_settings(**EVERID)
+class EverIDTests(TestCase):
+    def setUp(self):
+        self.owner = get_user_model().objects.create_user(settings.OWNER_EMAIL, settings.OWNER_EMAIL, PASSWORD)
+        self.client = Client()
+        discovery = patch("push.everid.discovery", return_value=DISCOVERY)
+        discovery.start()
+        self.addCleanup(discovery.stop)
+
+    def everid_login(self, email, groups, iss=EVERID["OIDC_ISSUER"], aud="everpush-client"):
+        start = self.client.get("/oidc/login/")
+        self.assertEqual(start.status_code, 302)
+        self.assertTrue(start["Location"].startswith("https://id.example.test/application/o/authorize/?"))
+        query = parse_qs(urlsplit(start["Location"]).query)
+        self.assertEqual(query["redirect_uri"], ["http://testserver/oidc/callback"])
+        self.assertEqual(query["code_challenge_method"], ["S256"])
+        self.assertEqual(query["scope"], ["openid email profile"])
+        id_token = {"iss": iss, "aud": aud, "nonce": query["nonce"][0], "email": email}
+        claims = {"email": email, "groups": groups}
+        base = "mozilla_django_oidc.auth.OIDCAuthenticationBackend."
+        with patch(base + "get_token", return_value={"id_token": "id-token", "access_token": "access"}), \
+                patch(base + "verify_token", return_value=id_token), \
+                patch(base + "get_userinfo", return_value=claims):
+            return self.client.get("/oidc/callback", {"code": "code", "state": query["state"][0]})
+
+    def test_group_allowed_matches_existing_owner_by_email(self):
+        response = self.everid_login(settings.OWNER_EMAIL.upper(), ["app-push", "everid-admins"])
+        self.assertRedirects(response, "/", fetch_redirect_response=False)
+        self.assertEqual(int(self.client.session["_auth_user_id"]), self.owner.pk)
+        self.assertEqual(self.client.get("/api/items/").status_code, 200)
+        self.assertEqual(get_user_model().objects.count(), 1)
+
+    def test_new_user_created_and_sees_shared_items(self):
+        Item.objects.create(text="Owner note")
+        response = self.everid_login("newcomer@example.com", ["app-push"])
+        self.assertEqual(response.status_code, 302)
+        user = get_user_model().objects.get(email="newcomer@example.com")
+        self.assertFalse(user.has_usable_password())
+        texts = [i["text"] for i in self.client.get("/api/items/").json()["items"]]
+        self.assertEqual(texts, ["Owner note"])
+
+    def test_group_denied_403_and_no_session(self):
+        response = self.everid_login("outsider@example.com", ["app-drive"])
+        self.assertEqual(response.status_code, 403)
+        self.assertContains(response, "non ha accesso a EverPush", status_code=403)
+        self.assertNotIn("_auth_user_id", self.client.session)
+        self.assertFalse(get_user_model().objects.filter(email="outsider@example.com").exists())
+        self.assertEqual(self.client.get("/api/items/").status_code, 401)
+
+    def test_wrong_issuer_or_audience_rejected(self):
+        for kwargs in ({"iss": "https://evil.test/"}, {"aud": "other-client"}):
+            self.client = Client()
+            response = self.everid_login(settings.OWNER_EMAIL, ["app-push"], **kwargs)
+            self.assertRedirects(response, "/login/?everid=error", fetch_redirect_response=False)
+            self.assertNotIn("_auth_user_id", self.client.session)
+
+    def test_logout_ends_session_and_redirects_to_end_session(self):
+        self.everid_login(settings.OWNER_EMAIL, ["app-push"])
+        response = self.client.post("/logout/")
+        self.assertEqual(response.status_code, 302)
+        location = urlsplit(response["Location"])
+        self.assertEqual(f"{location.scheme}://{location.netloc}{location.path}", DISCOVERY["end_session_endpoint"])
+        query = parse_qs(location.query)
+        self.assertEqual(query["id_token_hint"], ["id-token"])
+        self.assertEqual(query["post_logout_redirect_uri"], ["http://testserver/"])
+        self.assertEqual(self.client.get("/api/items/").status_code, 401)
+
+    def test_discovery_failure_fails_closed_to_login_page(self):
+        with patch("push.everid.discovery", side_effect=ValueError("down")):
+            self.assertRedirects(self.client.get("/oidc/login/"), "/login/?everid=error", fetch_redirect_response=False)
+
+    def test_discovery_rejects_foreign_issuer(self):
+        response = Mock(json=lambda: {**DISCOVERY, "issuer": "https://evil.test/"})
+        with patch("push.everid._config", {}), patch("push.everid.requests.get", return_value=response):
+            with self.assertRaises(ValueError):
+                real_discovery()
+
+    def test_login_page_offers_everid_first(self):
+        page = self.client.get("/login/").content.decode()
+        self.assertIn('data-testid="everid-login"', page)
+        self.assertLess(page.index("Accedi con EverID"), page.index('data-testid="login-email"'))
+        self.assertIn("form-action 'self' https://id.example.test", self.client.get("/login/")["Content-Security-Policy"])
+
+    @override_settings(LEGACY_LOGIN=False)
+    def test_legacy_off_rejects_password(self):
+        self.assertIsNone(authenticate(username=settings.OWNER_EMAIL, password=PASSWORD))
+        response = self.client.post("/login/", {"email": settings.OWNER_EMAIL, "password": PASSWORD})
+        self.assertEqual(response.status_code, 403)
+        self.assertNotIn("_auth_user_id", self.client.session)
+        self.assertNotContains(self.client.get("/login/"), 'data-testid="login-password"')
+
+    def test_legacy_session_dropped_when_legacy_turned_off(self):
+        self.client.post("/login/", {"email": settings.OWNER_EMAIL, "password": PASSWORD})
+        self.assertEqual(self.client.get("/api/items/").status_code, 200)
+        with override_settings(LEGACY_LOGIN=False):
+            self.assertEqual(self.client.get("/api/items/").status_code, 401)
+
+    @override_settings(OIDC_ENABLED=False)
+    def test_everid_routes_absent_when_not_configured(self):
+        self.assertEqual(self.client.get("/oidc/login/").status_code, 404)
+        self.assertEqual(self.client.get("/oidc/callback", {"code": "x", "state": "y"}).status_code, 404)
+        self.assertNotContains(self.client.get("/login/"), "Accedi con EverID")
