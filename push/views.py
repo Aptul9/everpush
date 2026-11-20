@@ -4,7 +4,8 @@ from functools import wraps
 import requests
 
 from django.conf import settings
-from django.contrib.auth import authenticate, login, logout
+from django.contrib.auth import logout
+from django.core.exceptions import SuspiciousOperation
 from django.core.exceptions import RequestDataTooBig
 from django.db import connection
 from django.http import FileResponse, Http404, HttpResponse, JsonResponse
@@ -49,7 +50,7 @@ def home(request):
 
 def login_page(request, error=None, status=200):
     return render(request, "login.html", {
-        "error": error, "everid": settings.OIDC_ENABLED, "legacy_login": settings.LEGACY_LOGIN,
+        "error": error, "sso": settings.OIDC_ENABLED,
     }, status=status)
 
 
@@ -57,38 +58,36 @@ def login_page(request, error=None, status=200):
 def login_view(request):
     if request.user.is_authenticated:
         return redirect("home")
-    error = None
-    status = 200
-    if request.method == "POST":
-        if not settings.LEGACY_LOGIN:
-            return login_page(request, "Accesso con password disattivato. Usa EverID.", 403)
-        try:
-            service.rate_limit(request, "login", 10, 15 * 60)
-            user = authenticate(request, username=request.POST.get("email", ""), password=request.POST.get("password", ""))
-            if user:
-                login(request, user)
-                return redirect("home")
-            error = "Email o password non corretti."
-            status = 400
-        except service.PushError as exc:
-            error, status = exc.message, exc.status
-    elif request.method != "GET":
+    if request.method != "GET":
         return HttpResponse(status=405)
-    elif request.GET.get("everid") == "error":
-        error = "Accesso con EverID non riuscito. Riprova."
-    return login_page(request, error, status)
+    if settings.OIDC_ENABLED and not request.COOKIES.get("sso_signed_out"):
+        return redirect("/oidc/login/?silent=1")
+    return login_page(request)
 
 
 class EverIDCallbackView(OIDCAuthenticationCallbackView):
     def get(self, request):
         if not settings.OIDC_ENABLED:
             raise Http404
+        if request.GET.get("error"):
+            state = request.GET.get("state")
+            if not state or state not in request.session.get("oidc_states", {}):
+                raise SuspiciousOperation("Invalid OIDC callback state")
+            request.silent_auth = request.session["oidc_states"][state].get("silent", False)
         return super().get(request)
 
+    def login_success(self):
+        response = super().login_success()
+        response.delete_cookie("sso_signed_out")
+        return response
+
     def login_failure(self):
-        if getattr(self.request, "everid_denied", False):
-            return login_page(self.request, "Il tuo account EverID non ha accesso a EverPush.", 403)
-        return redirect("/login/?everid=error")
+        error = self.request.GET.get("error")
+        if getattr(self.request, "everid_denied", False) or error == "access_denied":
+            return login_page(self.request, "Il tuo account non ha accesso a EverPush.", 403)
+        if getattr(self.request, "silent_auth", False) and error in {"login_required", "interaction_required", "consent_required", "account_selection_required"}:
+            return redirect("/oidc/login/")
+        return login_page(self.request, "Accesso non disponibile. Riprova.", 400)
 
 
 @require_GET
@@ -106,8 +105,17 @@ class EverIDRequestView(OIDCAuthenticationRequestView):
             self.OIDC_OP_AUTH_ENDPOINT = everid.discovery()["authorization_endpoint"]
         except (requests.RequestException, ValueError, KeyError) as exc:
             LOGGER.warning("EverID discovery failed: %s", exc)
-            return redirect("/login/?everid=error")
-        return super().get(request)
+            return login_page(request, "Accesso non disponibile. Riprova.", 503)
+        response = super().get(request)
+        if request.GET.get("silent") == "1":
+            from urllib.parse import parse_qs, urlsplit
+            state = parse_qs(urlsplit(response["Location"]).query)["state"][0]
+            request.session["oidc_states"][state]["silent"] = True
+            request.session.modified = True
+        return response
+
+    def get_extra_params(self, request):
+        return {"prompt": "none"} if request.GET.get("silent") == "1" else {}
 
 
 def end_session_endpoint():
@@ -126,8 +134,11 @@ def logout_view(request):
             "id_token_hint": id_token,
             "post_logout_redirect_uri": request.build_absolute_uri("/"),
         })
-        return redirect(f"{end_session_endpoint()}?{query}")
-    return redirect("login")
+        response = redirect(f"{end_session_endpoint()}?{query}")
+    else:
+        response = redirect("login")
+    response.set_cookie("sso_signed_out", "1", max_age=86400, secure=not settings.INSECURE_LOCAL, httponly=True, samesite="Lax")
+    return response
 
 
 @require_GET

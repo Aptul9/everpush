@@ -14,11 +14,16 @@ import urllib.request
 class Browser:
     def __init__(self, base):
         self.base = base.rstrip("/")
-        self.opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+        self.jar = http.cookiejar.CookieJar()
+        self.opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(self.jar))
         self.csrf = ""
+        self.session = ""
 
     def request(self, path, data=None, headers=None):
         values = {"Origin": self.base, "Referer": self.base + "/", **(headers or {})}
+        if self.session:
+            cookies = ["push_session=" + self.session] + [f"{c.name}={c.value}" for c in self.jar]
+            values["Cookie"] = "; ".join(cookies)
         if data is not None:
             values["X-CSRFToken"] = self.csrf
         request = urllib.request.Request(self.base + path, data=data, headers=values)
@@ -49,23 +54,20 @@ class Browser:
         return status, json.loads(raw)
 
 
-def run(base, password):
+def run(base, session):
     owner, guest, other = Browser(base), Browser(base), Browser(base)
+    owner.session = session
+    other.session = session
     for attempt in range(30):
         try:
-            owner.page("/login/")
+            owner.page("/")
             break
         except (OSError, AssertionError):
             if attempt == 29:
                 raise
             time.sleep(1)
-    form = urllib.parse.urlencode({"email": "aptul4ever@gmail.com", "password": password, "csrfmiddlewaretoken": owner.csrf}).encode()
-    status, page = owner.request("/login/", form, {"Content-Type": "application/x-www-form-urlencoded"})
-    assert status == 200 and b"Il tuo <em>Push</em>" in page, (status, page[:200])
     owner.page("/")
-    other.page("/login/")
-    form = urllib.parse.urlencode({"email": "aptul4ever@gmail.com", "password": password, "csrfmiddlewaretoken": other.csrf}).encode()
-    assert other.request("/login/", form, {"Content-Type": "application/x-www-form-urlencoded"})[0] == 200
+    other.page("/")
     made = []
     try:
         start = json.loads(other.request("/api/items/")[1])["ids"]

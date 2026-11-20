@@ -8,7 +8,7 @@ Text and files sent from one browser appear in every other open session within a
 
 EverID (Authentik at `id.everbright.it`) is the primary login: OIDC authorization code with PKCE, client `everpush`, callback `/oidc/callback`, scopes `openid email profile`. Access requires group `app-push` in the `groups` claim; other EverID users get HTTP 403 and no session. Users are matched by email (case-insensitive) or created on first login without a usable password. Logout ends the local session and redirects to the EverID end-session endpoint with `id_token_hint`.
 
-Password login for the seeded owner is a fallback behind `LEGACY_LOGIN` (repository variable, default `1`). With `LEGACY_LOGIN=0` password posts return HTTP 403 and existing password sessions stop being valid. Startup refuses `LEGACY_LOGIN=0` without EverID client credentials.
+Unauthenticated access first requests silent OIDC authentication. When interaction is required, the browser goes to the central login page. Logout suppresses silent authentication until the user chooses to sign in again. The application does not accept a credential form. `LEGACY_LOGIN=0` invalidates existing legacy sessions; startup refuses that setting without OIDC client credentials.
 
 ## Limits
 
