@@ -64,10 +64,7 @@ class PushTests(TestCase):
         client = Client(enforce_csrf_checks=True)
         page = client.get("/login/")
         self.assertContains(page, "Accedi a EverPush")
-        token = client.cookies[settings.CSRF_COOKIE_NAME].value
-        response = client.post("/login/", {"email": settings.OWNER_EMAIL.upper(), "password": self.password, "csrfmiddlewaretoken": token})
-        self.assertRedirects(response, "/", fetch_redirect_response=False)
-        self.assertContains(client.get("/"), "Il tuo <em>Push</em>")
+        self.assertNotContains(page, 'type="password"')
 
     def test_text_round_trip_and_incremental_sync(self):
         first = self.text("primo\r\n  riga due").json()
@@ -152,10 +149,7 @@ class PushTests(TestCase):
         self.assertTrue((settings.FILE_DIR / stored).exists())
 
     def test_login_rate_limited(self):
-        for _ in range(10):
-            self.guest.post("/login/", {"email": settings.OWNER_EMAIL, "password": "wrong"})
-        response = self.guest.post("/login/", {"email": settings.OWNER_EMAIL, "password": self.password})
-        self.assertEqual(response.status_code, 429)
+        self.assertEqual(self.guest.post("/login/").status_code, 405)
 
     def test_bootstrap_owner_never_resets_password(self):
         with patch("sys.stdin.readline", return_value="another-password-123\n"):
@@ -192,8 +186,8 @@ class EverIDTests(TestCase):
         discovery.start()
         self.addCleanup(discovery.stop)
 
-    def everid_login(self, email, groups, iss=EVERID["OIDC_ISSUER"], aud="everpush-client"):
-        start = self.client.get("/oidc/login/")
+    def everid_login(self, email, groups, iss=EVERID["OIDC_ISSUER"], aud="everpush-client", silent=False):
+        start = self.client.get("/oidc/login/?silent=1" if silent else "/oidc/login/")
         self.assertEqual(start.status_code, 302)
         self.assertTrue(start["Location"].startswith("https://id.example.test/application/o/authorize/?"))
         query = parse_qs(urlsplit(start["Location"]).query)
@@ -236,7 +230,7 @@ class EverIDTests(TestCase):
         for kwargs in ({"iss": "https://evil.test/"}, {"aud": "other-client"}):
             self.client = Client()
             response = self.everid_login(settings.OWNER_EMAIL, ["app-push"], **kwargs)
-            self.assertRedirects(response, "/login/?everid=error", fetch_redirect_response=False)
+            self.assertEqual(response.status_code, 400)
             self.assertNotIn("_auth_user_id", self.client.session)
 
     def test_logout_ends_session_and_redirects_to_end_session(self):
@@ -252,7 +246,7 @@ class EverIDTests(TestCase):
 
     def test_discovery_failure_fails_closed_to_login_page(self):
         with patch("push.everid.discovery", side_effect=ValueError("down")):
-            self.assertRedirects(self.client.get("/oidc/login/"), "/login/?everid=error", fetch_redirect_response=False)
+            self.assertEqual(self.client.get("/oidc/login/").status_code, 503)
 
     def test_discovery_rejects_foreign_issuer(self):
         response = Mock(json=lambda: {**DISCOVERY, "issuer": "https://evil.test/"})
@@ -260,22 +254,58 @@ class EverIDTests(TestCase):
             with self.assertRaises(ValueError):
                 real_discovery()
 
+    def test_silent_fallback_and_invalid_state(self):
+        self.assertRedirects(self.client.get("/login/"), "/oidc/login/?silent=1", fetch_redirect_response=False)
+        start = self.client.get("/oidc/login/?silent=1")
+        query = parse_qs(urlsplit(start["Location"]).query)
+        self.assertEqual(query["prompt"], ["none"])
+        self.assertEqual(query["code_challenge_method"], ["S256"])
+        self.assertEqual(self.client.get("/oidc/callback", {"error": "login_required", "state": "invalid"}).status_code, 400)
+        callback = self.client.get("/oidc/callback", {"error": "login_required", "state": query["state"][0]})
+        self.assertRedirects(callback, "/oidc/login/", fetch_redirect_response=False)
+        normal = parse_qs(urlsplit(self.client.get("/oidc/login/")["Location"]).query)
+        self.assertNotIn("prompt", normal)
+        self.assertEqual(self.client.get("/oidc/callback", {"error": "login_required", "state": query["state"][0]}).status_code, 400)
+
+    def test_logout_does_not_restart_silent_login(self):
+        self.everid_login(settings.OWNER_EMAIL, ["app-push"])
+        result = self.client.post("/logout/")
+        self.assertEqual(result.cookies["sso_signed_out"].value, "1")
+        self.assertEqual(self.client.get("/login/").status_code, 200)
+        self.assertContains(self.client.get("/login/"), 'href="/oidc/login/"')
+
+    def test_silent_success_establishes_local_session(self):
+        self.client.cookies["sso_signed_out"] = "1"
+        response = self.everid_login(settings.OWNER_EMAIL, ["app-push"], silent=True)
+        self.assertRedirects(response, "/", fetch_redirect_response=False)
+        self.assertEqual(self.client.get("/api/items/").status_code, 200)
+        self.assertEqual(response.cookies["sso_signed_out"].value, "")
+
+    def test_silent_access_denied_does_not_retry(self):
+        start = self.client.get("/oidc/login/?silent=1")
+        state = parse_qs(urlsplit(start["Location"]).query)["state"][0]
+        response = self.client.get("/oidc/callback", {"error": "access_denied", "state": state})
+        self.assertEqual(response.status_code, 403)
+        self.assertNotIn("_auth_user_id", self.client.session)
+
     def test_login_page_offers_everid_first(self):
+        self.client.cookies["sso_signed_out"] = "1"
         page = self.client.get("/login/").content.decode()
-        self.assertIn('data-testid="everid-login"', page)
-        self.assertLess(page.index("Accedi con EverID"), page.index('data-testid="login-email"'))
+        self.assertNotIn("EverID", page)
+        self.assertIn('href="/oidc/login/"', page)
         self.assertIn("form-action 'self' https://id.example.test", self.client.get("/login/")["Content-Security-Policy"])
 
     @override_settings(LEGACY_LOGIN=False)
     def test_legacy_off_rejects_password(self):
         self.assertIsNone(authenticate(username=settings.OWNER_EMAIL, password=PASSWORD))
         response = self.client.post("/login/", {"email": settings.OWNER_EMAIL, "password": PASSWORD})
-        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.status_code, 405)
         self.assertNotIn("_auth_user_id", self.client.session)
+        self.client.cookies["sso_signed_out"] = "1"
         self.assertNotContains(self.client.get("/login/"), 'data-testid="login-password"')
 
     def test_legacy_session_dropped_when_legacy_turned_off(self):
-        self.client.post("/login/", {"email": settings.OWNER_EMAIL, "password": PASSWORD})
+        self.client.force_login(self.owner, backend="push.auth.OwnerBackend")
         self.assertEqual(self.client.get("/api/items/").status_code, 200)
         with override_settings(LEGACY_LOGIN=False):
             self.assertEqual(self.client.get("/api/items/").status_code, 401)
