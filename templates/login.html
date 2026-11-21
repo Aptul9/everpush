@@ -14,7 +14,12 @@
     <h2 id="login-title">Accedi a EverPush</h2>
     <p class="muted">I tuoi appunti condivisi tra dispositivi.</p>
     {% if error %}<p class="form-error" role="alert">{{ error }}</p>{% endif %}
-    {% if sso %}<a class="primary full" href="/oidc/login/">Accedi</a>{% endif %}
+    <form method="post" class="login-form">
+      {% csrf_token %}
+      <label>Email o nome utente<input name="email" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" required maxlength="254" placeholder="La tua email" data-testid="login-email"></label>
+      <label>Password<input name="password" type="password" autocomplete="current-password" required maxlength="1024" placeholder="La tua password" data-testid="login-password"></label>
+      <button class="primary full" type="submit" data-testid="login-submit">Accedi <span aria-hidden="true">↗</span></button>
+    </form>
   </section>
 </main>
 <footer class="entry-footer">Everbright IT Services <span>Da un dispositivo all'altro.</span></footer>

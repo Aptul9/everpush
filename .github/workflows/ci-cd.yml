@@ -129,8 +129,6 @@ jobs:
           curl --fail --silent --show-error https://push.everbright.it/healthz/ | grep -q '"status": "ok"'
           curl --fail --silent --show-error https://push.everbright.it/login/ | grep -q 'Accedi a EverPush'
           test "$(curl -s -o /dev/null -w '%{http_code}' https://push.everbright.it/api/items/)" = 401
-          test "$(curl -s -o /dev/null -w '%{http_code}' https://push.everbright.it/login/)" = 302
-          origin=$(cut -d/ -f1-3 <<< "${{ vars.OIDC_ISSUER }}")
-          location=$(curl --silent --show-error -o /dev/null -w '%{http_code} %{redirect_url}' https://push.everbright.it/oidc/login/)
-          echo "EverID start: ${location%%\?*}"
-          [[ "$location" == "302 $origin/application/o/authorize/?"* ]]
+          page=$(curl --fail --silent --show-error https://push.everbright.it/login/)
+          grep -q 'data-testid="login-password"' <<< "$page"
+          if grep -qi 'everid' <<< "$page"; then echo 'login page mentions EverID' >&2; exit 1; fi

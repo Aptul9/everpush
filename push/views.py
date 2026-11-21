@@ -5,13 +5,11 @@ import requests
 
 from django.conf import settings
 from django.contrib.auth import logout
-from django.core.exceptions import SuspiciousOperation
 from django.core.exceptions import RequestDataTooBig
 from django.db import connection
 from django.http import FileResponse, Http404, HttpResponse, JsonResponse
 from django.shortcuts import redirect, render
 from django.views.decorators.csrf import ensure_csrf_cookie
-from django.utils.http import urlencode
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 from mozilla_django_oidc.views import OIDCAuthenticationCallbackView, OIDCAuthenticationRequestView
 
@@ -49,54 +47,58 @@ def home(request):
 
 
 def login_page(request, error=None, status=200):
-    return render(request, "login.html", {
-        "error": error, "sso": settings.OIDC_ENABLED,
-    }, status=status)
+    return render(request, "login.html", {"error": error}, status=status)
+
+
+WRONG_CREDENTIALS = "Email o password non corretti."
+UNAVAILABLE = "Accesso non disponibile. Riprova."
 
 
 @ensure_csrf_cookie
 def login_view(request):
     if request.user.is_authenticated:
         return redirect("home")
-    if request.method != "GET":
+    if request.method == "GET":
+        return login_page(request)
+    if request.method != "POST":
         return HttpResponse(status=405)
-    if settings.OIDC_ENABLED and not request.COOKIES.get("sso_signed_out"):
-        return redirect("/oidc/login/?silent=1")
-    return login_page(request)
+    if not settings.OIDC_ENABLED:
+        return login_page(request, UNAVAILABLE, 503)
+    try:
+        service.rate_limit(request, "login", 10, 15 * 60)
+    except service.PushError as exc:
+        return login_page(request, exc.message, exc.status)
+    username = request.POST.get("email", "").strip()[:254]
+    password = request.POST.get("password", "")[:1024]
+    if not username or not password:
+        return login_page(request, WRONG_CREDENTIALS, 400)
+    view = EverIDRequestView()
+    view.setup(request)
+    start = view.get(request)
+    if start.status_code != 302:
+        return start
+    try:
+        result = everid.sign_in(username, password, start["Location"])
+    except (requests.RequestException, ValueError) as exc:
+        LOGGER.warning("Sign-in through EverID failed: %s", type(exc).__name__)
+        return login_page(request, UNAVAILABLE, 503)
+    if result == everid.WRONG:
+        return login_page(request, WRONG_CREDENTIALS, 400)
+    if result == everid.DENIED:
+        return login_page(request, "Il tuo account non ha accesso a EverPush.", 403)
+    return redirect(result)
 
 
 class EverIDCallbackView(OIDCAuthenticationCallbackView):
     def get(self, request):
         if not settings.OIDC_ENABLED:
             raise Http404
-        if request.GET.get("error"):
-            state = request.GET.get("state")
-            if not state or state not in request.session.get("oidc_states", {}):
-                raise SuspiciousOperation("Invalid OIDC callback state")
-            request.silent_auth = request.session["oidc_states"][state].get("silent", False)
         return super().get(request)
 
-    def login_success(self):
-        response = super().login_success()
-        response.delete_cookie("sso_signed_out")
-        return response
-
     def login_failure(self):
-        error = self.request.GET.get("error")
-        if getattr(self.request, "everid_denied", False) or error == "access_denied":
+        if getattr(self.request, "everid_denied", False) or self.request.GET.get("error") == "access_denied":
             return login_page(self.request, "Il tuo account non ha accesso a EverPush.", 403)
-        if getattr(self.request, "silent_auth", False) and error in {"login_required", "interaction_required", "consent_required", "account_selection_required"}:
-            return redirect("/oidc/login/")
-        return login_page(self.request, "Accesso non disponibile. Riprova.", 400)
-
-
-@require_GET
-def everid_login(request):
-    if not settings.OIDC_ENABLED:
-        raise Http404
-    if request.user.is_authenticated:
-        return redirect("home")
-    return EverIDRequestView.as_view()(request)
+        return login_page(self.request, UNAVAILABLE, 400)
 
 
 class EverIDRequestView(OIDCAuthenticationRequestView):
@@ -105,40 +107,14 @@ class EverIDRequestView(OIDCAuthenticationRequestView):
             self.OIDC_OP_AUTH_ENDPOINT = everid.discovery()["authorization_endpoint"]
         except (requests.RequestException, ValueError, KeyError) as exc:
             LOGGER.warning("EverID discovery failed: %s", exc)
-            return login_page(request, "Accesso non disponibile. Riprova.", 503)
-        response = super().get(request)
-        if request.GET.get("silent") == "1":
-            from urllib.parse import parse_qs, urlsplit
-            state = parse_qs(urlsplit(response["Location"]).query)["state"][0]
-            request.session["oidc_states"][state]["silent"] = True
-            request.session.modified = True
-        return response
-
-    def get_extra_params(self, request):
-        return {"prompt": "none"} if request.GET.get("silent") == "1" else {}
-
-
-def end_session_endpoint():
-    try:
-        return everid.discovery()["end_session_endpoint"]
-    except (requests.RequestException, ValueError, KeyError):
-        return settings.OIDC_OP_LOGOUT_ENDPOINT
+            return login_page(request, UNAVAILABLE, 503)
+        return super().get(request)
 
 
 @require_POST
 def logout_view(request):
-    id_token = request.session.get("oidc_id_token")
     logout(request)
-    if settings.OIDC_ENABLED and id_token:
-        query = urlencode({
-            "id_token_hint": id_token,
-            "post_logout_redirect_uri": request.build_absolute_uri("/"),
-        })
-        response = redirect(f"{end_session_endpoint()}?{query}")
-    else:
-        response = redirect("login")
-    response.set_cookie("sso_signed_out", "1", max_age=86400, secure=not settings.INSECURE_LOCAL, httponly=True, samesite="Lax")
-    return response
+    return redirect("login")
 
 
 @require_GET
