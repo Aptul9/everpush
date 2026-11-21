@@ -7,7 +7,7 @@
   <meta name="theme-color" content="#080c10">
   <meta name="csrf-token" content="{{ csrf_token }}">
   <title>{% block title %}EverPush{% endblock %}</title>
-  <link rel="icon" href="/static/icon.png" type="image/png">
+  <link rel="icon" href="/static/app-icon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/static/push.css">
   {% block scripts %}{% endblock %}
 </head>
@@ -25,7 +25,7 @@
   </svg>
   <header class="topbar">
     <a class="brand" href="/" aria-label="EverPush">
-      <img src="/static/logo-icon.png" alt="" width="34" height="34">
+      <img src="/static/app-icon.svg" alt="" width="34" height="34">
       <span><b>EVERPUSH</b><small>EVERBRIGHT</small></span>
     </a>
     {% if request.user.is_authenticated %}<div class="capacity-top" role="status" aria-live="polite"><span class="status-dot" data-live-dot></span><span data-count>Sincronizzazione…</span></div>{% endif %}
