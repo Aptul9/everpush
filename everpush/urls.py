@@ -5,7 +5,6 @@ urlpatterns = [
     path("", views.home, name="home"),
     path("login/", views.login_view, name="login"),
     path("logout/", views.logout_view, name="logout"),
-    path("oidc/login/", views.everid_login, name="oidc_authentication_init"),
     path("oidc/callback", views.EverIDCallbackView.as_view(), name="oidc_authentication_callback"),
     path("healthz/", views.health, name="health"),
     path("api/items/", views.items, name="items"),
